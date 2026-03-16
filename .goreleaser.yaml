@@ -1,0 +1,46 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - binary: buzz
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - formats:
+      - tar.gz
+    name_template: "buzz_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+checksum:
+  name_template: "buzz_{{ .Version }}_checksums.txt"
+
+release:
+  github:
+    owner: buzzhpc
+    name: buzz-cli
+
+brews:
+  - name: buzz
+    repository:
+      owner: buzzhpc
+      name: homebrew-tap
+    homepage: "https://buzzhpc.ai"
+    description: "BuzzHPC CLI — manage GPU cloud resources from the command line"
+    install: |
+      bin.install "buzz"

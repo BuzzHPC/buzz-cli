@@ -35,12 +35,3 @@ release:
     owner: buzzhpc
     name: buzz-cli
 
-brews:
-  - name: buzz
-    repository:
-      owner: buzzhpc
-      name: homebrew-tap
-    homepage: "https://buzzhpc.ai"
-    description: "BuzzHPC CLI — manage GPU cloud resources from the command line"
-    install: |
-      bin.install "buzz"

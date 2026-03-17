@@ -1,8 +1,8 @@
 #!/bin/sh
 set -e
 
-REPO="buzzhpc/buzz-cli"
-BINARY="buzz-cli"
+REPO="BuzzHPC/buzz-cli"
+BINARY="buzz"
 INSTALL_DIR="/usr/local/bin"
 
 # Detect OS and arch
@@ -24,6 +24,8 @@ fi
 echo "Installing buzz ${VERSION} (${OS}/${ARCH})..."
 
 URL="https://github.com/${REPO}/releases/download/${VERSION}/buzz_${VERSION#v}_${OS}_${ARCH}.tar.gz"
+
+echo "Downloading from: $URL"
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT

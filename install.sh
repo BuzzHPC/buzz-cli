@@ -2,7 +2,7 @@
 set -e
 
 REPO="buzzhpc/buzz-cli"
-BINARY="buzz"
+BINARY="buzz-cli"
 INSTALL_DIR="/usr/local/bin"
 
 # Detect OS and arch
@@ -29,7 +29,7 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
 curl -fsSL "$URL" | tar -xz -C "$TMP"
-install -m 755 "$TMP/$BINARY" "$INSTALL_DIR/$BINARY"
+install -m 755 "$TMP/$BINARY" "$INSTALL_DIR/buzz"
 
-echo "buzz installed to $INSTALL_DIR/$BINARY"
-buzz --version
+echo "buzz installed to $INSTALL_DIR/buzz"
+"$INSTALL_DIR/buzz" --version

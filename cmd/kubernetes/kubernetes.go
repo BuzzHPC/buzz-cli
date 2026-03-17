@@ -24,8 +24,8 @@ func NewCmd(a app.App) *cobra.Command {
 		newListCmd(a),
 		newGetCmd(a),
 		newDeleteCmd(a),
-		newTagsCmd(a),
-		newTagCmd(a),
+		newLabelsCmd(a),
+		newLabelCmd(a),
 	)
 	return cmd
 }
@@ -293,54 +293,48 @@ func mustMarshal(v interface{}) json.RawMessage {
 	return b
 }
 
-func newTagsCmd(a app.App) *cobra.Command {
+func newLabelsCmd(a app.App) *cobra.Command {
 	return &cobra.Command{
-		Use:     "tags <cluster>",
-		Aliases: []string{"list-tags"},
-		Short:   "List tags on a Kubernetes cluster",
+		Use:     "labels <cluster>",
+		Aliases: []string{"list-labels"},
+		Short:   "List labels on a Kubernetes cluster",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ref, err := cmdutil.RequireWorkspaceRef(cmd.Context(), a)
 			if err != nil {
 				return err
 			}
-			clusterName := args[0]
-			items, err := a.Client().List(context.Background(), client.TagAssociationPath(ref.Project, ""))
+			b, err := a.Client().Get(context.Background(), client.ClusterPath(ref.Project, args[0]))
 			if err != nil {
 				return err
 			}
-			var rows [][]string
-			for _, raw := range items {
-				var ta client.TagAssociation
-				if json.Unmarshal(raw, &ta) != nil {
-					continue
-				}
-				for _, assoc := range ta.Spec.Associations {
-					if assoc.Resource == clusterName {
-						rows = append(rows, []string{assoc.TagKey, assoc.TagValue, assoc.TagType, ta.Metadata.Name})
-					}
-				}
+			var c client.InfraCluster
+			if err := json.Unmarshal(b, &c); err != nil {
+				return err
 			}
-			if len(rows) == 0 {
-				output.Info(fmt.Sprintf("No tags found on cluster %q.", clusterName))
+			if len(c.Metadata.Labels) == 0 {
+				output.Info(fmt.Sprintf("No labels found on cluster %q.", args[0]))
 				return nil
 			}
-			output.Table([]string{"KEY", "VALUE", "TYPE", "ASSOCIATION"}, rows)
+			var rows [][]string
+			for k, v := range c.Metadata.Labels {
+				rows = append(rows, []string{k, v})
+			}
+			output.Table([]string{"KEY", "VALUE"}, rows)
 			return nil
 		},
 	}
 }
 
-func newTagCmd(a app.App) *cobra.Command {
-	var tagType string
+func newLabelCmd(a app.App) *cobra.Command {
 	var remove bool
 
 	cmd := &cobra.Command{
-		Use:   "tag <cluster> key=value",
-		Short: "Apply or remove a tag on a Kubernetes cluster",
-		Example: `  buzz k8s tag my-cluster env=production
-  buzz k8s tag my-cluster team=ml --type cost
-  buzz k8s tag my-cluster env=production --remove`,
+		Use:   "label <cluster> key=value",
+		Short: "Add or remove a label on a Kubernetes cluster",
+		Example: `  buzz k8s label my-cluster env=production
+  buzz k8s label my-cluster team=ml
+  buzz k8s label my-cluster env=production --remove`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ref, err := cmdutil.RequireWorkspaceRef(cmd.Context(), a)
@@ -350,79 +344,53 @@ func newTagCmd(a app.App) *cobra.Command {
 			clusterName := args[0]
 			kv := strings.SplitN(args[1], "=", 2)
 			if len(kv) != 2 {
-				return fmt.Errorf("tag must be in key=value format")
+				return fmt.Errorf("label must be in key=value format")
 			}
-			tagKey, tagValue := kv[0], kv[1]
+			labelKey, labelValue := kv[0], kv[1]
+
+			// Fetch current cluster from infra API
+			b, err := a.Client().Get(context.Background(), client.ClusterPath(ref.Project, clusterName))
+			if err != nil {
+				return err
+			}
+			var c client.InfraCluster
+			if err := json.Unmarshal(b, &c); err != nil {
+				return err
+			}
 
 			if remove {
-				// Find the association containing this tag on the cluster
-				items, err := a.Client().List(context.Background(), client.TagAssociationPath(ref.Project, ""))
-				if err != nil {
-					return err
+				if _, exists := c.Metadata.Labels[labelKey]; !exists {
+					return fmt.Errorf("label %q not found on cluster %q", labelKey, clusterName)
 				}
-				found := false
-				for _, raw := range items {
-					var ta client.TagAssociation
-					if json.Unmarshal(raw, &ta) != nil {
-						continue
-					}
-					for _, assoc := range ta.Spec.Associations {
-						if assoc.Resource == clusterName && assoc.TagKey == tagKey && assoc.TagValue == tagValue {
-							if err := a.Client().Delete(context.Background(), client.TagAssociationPath(ref.Project, ta.Metadata.Name)); err != nil {
-								return err
-							}
-							output.Success(fmt.Sprintf("Removed tag %s=%s from cluster %q.", tagKey, tagValue, clusterName))
-							found = true
-							break
-						}
-					}
-					if found {
-						break
-					}
+				delete(c.Metadata.Labels, labelKey)
+			} else {
+				if c.Metadata.Labels == nil {
+					c.Metadata.Labels = make(map[string]string)
 				}
-				if !found {
-					return fmt.Errorf("tag %s=%s not found on cluster %q", tagKey, tagValue, clusterName)
-				}
-				return nil
+				c.Metadata.Labels[labelKey] = labelValue
 			}
 
-			// Create a TagGroup for the key/value
-			tgName := fmt.Sprintf("%s-%s-%s", clusterName, tagKey, strings.ReplaceAll(tagValue, "=", "-"))
-			tg := &client.TagGroup{
-				APIVersion: "tags.k8smgmt.io/v3",
-				Kind:       "TagGroup",
-				Metadata:   client.Metadata{Name: tgName, Project: ref.Project},
-				Spec: client.TagGroupSpec{
-					Tags: []client.TagKV{{Key: tagKey, Value: tagValue}},
-				},
-			}
-			if _, err := a.Client().Post(context.Background(), client.TagGroupPath(ref.Project, ""), tg); err != nil {
-				// Ignore already-exists errors
-				if !strings.Contains(err.Error(), "already exists") && !strings.Contains(err.Error(), "exists") {
-					return fmt.Errorf("create tag group: %w", err)
+			// Strip spec.proxy which the API rejects on update
+			var specMap map[string]json.RawMessage
+			if len(c.Spec) > 0 {
+				if err := json.Unmarshal(c.Spec, &specMap); err == nil {
+					delete(specMap, "proxy")
+					c.Spec, _ = json.Marshal(specMap)
 				}
 			}
 
-			// Create the association
-			assocName := fmt.Sprintf("%s-%s-%s-assoc", clusterName, tagKey, strings.ReplaceAll(tagValue, "=", "-"))
-			ta := &client.TagAssociation{
-				APIVersion: "tags.k8smgmt.io/v3",
-				Kind:       "ProjectTagsAssociation",
-				Metadata:   client.Metadata{Name: assocName, Project: ref.Project},
-				Spec: client.TagAssociationSpec{
-					Associations: []client.TagAssociationEntry{
-						{TagKey: tagKey, TagType: tagType, TagValue: tagValue, Resource: clusterName},
-					},
-				},
+			if _, err := a.Client().Post(context.Background(), client.ClusterPath(ref.Project, ""), c); err != nil {
+				return err
 			}
-			if _, err := a.Client().Post(context.Background(), client.TagAssociationPath(ref.Project, ""), ta); err != nil {
-				return fmt.Errorf("create tag association: %w", err)
+
+			if remove {
+				output.Success(fmt.Sprintf("Removed label %q from cluster %q.", labelKey, clusterName))
+			} else {
+				output.Success(fmt.Sprintf("Set label %s=%s on cluster %q.", labelKey, labelValue, clusterName))
 			}
-			output.Success(fmt.Sprintf("Tagged cluster %q with %s=%s (type: %s).", clusterName, tagKey, tagValue, tagType))
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&tagType, "type", "k8s", "Tag type: k8s, cost, namespacelabel")
-	cmd.Flags().BoolVar(&remove, "remove", false, "Remove the tag instead of applying it")
+	cmd.Flags().BoolVar(&remove, "remove", false, "Remove the label instead of adding it")
 	return cmd
 }

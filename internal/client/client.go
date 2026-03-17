@@ -213,6 +213,15 @@ func (c *Client) List(ctx context.Context, path string) ([]json.RawMessage, erro
 	return all, nil
 }
 
+// ClusterPath returns the infra.k8smgmt.io/v3 path for a cluster (used for label management).
+func ClusterPath(project, name string) string {
+	base := fmt.Sprintf("/apis/infra.k8smgmt.io/v3/projects/%s/clusters", project)
+	if name != "" {
+		return base + "/" + name
+	}
+	return base
+}
+
 // ComputeInstancePath returns the collection or item path for compute instances.
 func ComputeInstancePath(project, workspace, name string) string {
 	base := fmt.Sprintf("/apis/paas.envmgmt.io/v1/projects/%s/workspaces/%s/computeinstances", project, workspace)
@@ -247,6 +256,21 @@ func TagAssociationPath(project, name string) string {
 		return base + "/" + name
 	}
 	return base
+}
+
+// InfraCluster represents the infra.k8smgmt.io/v3 cluster resource used for label management.
+type InfraCluster struct {
+	APIVersion string              `json:"apiVersion"`
+	Kind       string              `json:"kind"`
+	Metadata   InfraClusterMeta    `json:"metadata"`
+	Spec       json.RawMessage     `json:"spec,omitempty"`
+}
+
+type InfraClusterMeta struct {
+	Name       string            `json:"name"`
+	Project    string            `json:"project,omitempty"`
+	Labels     map[string]string `json:"labels,omitempty"`
+	ModifiedAt string            `json:"modifiedAt,omitempty"`
 }
 
 // TagGroup represents a named set of key/value tags.

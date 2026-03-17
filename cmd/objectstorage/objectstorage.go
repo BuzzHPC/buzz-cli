@@ -30,7 +30,7 @@ func NewCmd(a app.App) *cobra.Command {
 func newCreateCmd(a app.App) *cobra.Command {
 	var name, sku string
 	var quotaGB int
-	var noDeploy bool
+	var noDeploy, wait bool
 
 	cmd := &cobra.Command{
 		Use:   "create",
@@ -69,6 +69,9 @@ func newCreateCmd(a app.App) *cobra.Command {
 				return fmt.Errorf("created but deploy failed: %w", err)
 			}
 			output.Success(fmt.Sprintf("Bucket %q deployed.", name))
+			if wait {
+				return cmdutil.WaitForReady(context.Background(), a.Client(), client.ServicePath(ref.Project, ref.Name, name), fmt.Sprintf("Bucket %q", name))
+			}
 			return nil
 		},
 	}
@@ -76,6 +79,7 @@ func newCreateCmd(a app.App) *cobra.Command {
 	cmd.Flags().StringVar(&sku, "sku", "object-storage-vast-ca-qc-2", "SKU: object-storage-vast-ca-qc-2 (CA-QC-2) or object-storage-vast (CA-QC-1)")
 	cmd.Flags().IntVarP(&quotaGB, "size", "s", 10, "Storage quota in GB")
 	cmd.Flags().BoolVar(&noDeploy, "no-deploy", false, "Create resource without deploying it")
+	cmd.Flags().BoolVar(&wait, "wait", false, "Wait for resource to be ready after deploying")
 	cmd.MarkFlagRequired("name")
 	return cmd
 }
@@ -176,14 +180,22 @@ func newDeleteCmd(a app.App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if !force {
-				fmt.Printf("Delete bucket %q? This will permanently delete all data. [y/N] ", args[0])
-				var confirm string
-				fmt.Scanln(&confirm)
-				if confirm != "y" && confirm != "Y" {
-					output.Info("Cancelled.")
-					return nil
+			var details [][2]string
+			if b, err := a.Client().Get(context.Background(), client.ServicePath(ref.Project, ref.Name, args[0])); err == nil {
+				var res client.CommonResource
+				json.Unmarshal(b, &res)
+				details = [][2]string{
+					{"Status", output.ExtractStatus(res.Status)},
+					{"Workspace", ref.Name},
 				}
+			}
+			ok, err := cmdutil.ConfirmDelete(force, "Bucket", args[0], details)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				output.Info("Cancelled.")
+				return nil
 			}
 			if err := a.Client().Delete(context.Background(), client.ServicePath(ref.Project, ref.Name, args[0])); err != nil {
 				return err

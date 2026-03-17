@@ -30,7 +30,7 @@ func NewCmd(a app.App) *cobra.Command {
 func newCreateCmd(a app.App) *cobra.Command {
 	var name, sku, nodeType string
 	var nodeCount int
-	var noDeploy bool
+	var noDeploy, wait bool
 
 	cmd := &cobra.Command{
 		Use:   "create",
@@ -70,6 +70,9 @@ func newCreateCmd(a app.App) *cobra.Command {
 				return fmt.Errorf("created but deploy failed: %w", err)
 			}
 			output.Success(fmt.Sprintf("Cluster %q deployed.", name))
+			if wait {
+				return cmdutil.WaitForReady(context.Background(), a.Client(), client.ComputeInstancePath(ref.Project, ref.Name, name), fmt.Sprintf("Cluster %q", name))
+			}
 			return nil
 		},
 	}
@@ -78,6 +81,7 @@ func newCreateCmd(a app.App) *cobra.Command {
 	cmd.Flags().StringVar(&nodeType, "node-type", "H200", "GPU node type: H200, A40, H100, CPU")
 	cmd.Flags().IntVar(&nodeCount, "nodes", 1, "Number of nodes")
 	cmd.Flags().BoolVar(&noDeploy, "no-deploy", false, "Create resource without deploying it")
+	cmd.Flags().BoolVar(&wait, "wait", false, "Wait for resource to be ready after deploying")
 	cmd.MarkFlagRequired("name")
 	return cmd
 }
@@ -171,14 +175,22 @@ func newDeleteCmd(a app.App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if !force {
-				fmt.Printf("Delete cluster %q? [y/N] ", args[0])
-				var confirm string
-				fmt.Scanln(&confirm)
-				if confirm != "y" && confirm != "Y" {
-					output.Info("Cancelled.")
-					return nil
+			var details [][2]string
+			if b, err := a.Client().Get(context.Background(), client.ComputeInstancePath(ref.Project, ref.Name, args[0])); err == nil {
+				var res client.CommonResource
+				json.Unmarshal(b, &res)
+				details = [][2]string{
+					{"Status", output.ExtractStatus(res.Status)},
+					{"Workspace", ref.Name},
 				}
+			}
+			ok, err := cmdutil.ConfirmDelete(force, "Cluster", args[0], details)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				output.Info("Cancelled.")
+				return nil
 			}
 			if err := a.Client().Delete(context.Background(), client.ComputeInstancePath(ref.Project, ref.Name, args[0])); err != nil {
 				return err

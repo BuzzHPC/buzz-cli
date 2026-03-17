@@ -30,7 +30,7 @@ func NewCmd(a app.App) *cobra.Command {
 func newCreateCmd(a app.App) *cobra.Command {
 	var name, sku, nodeType, image string
 	var gpuCount int
-	var noDeploy bool
+	var noDeploy, wait bool
 
 	cmd := &cobra.Command{
 		Use:   "create",
@@ -71,6 +71,9 @@ func newCreateCmd(a app.App) *cobra.Command {
 			}
 			output.Success(fmt.Sprintf("Notebook %q deployed.", name))
 			output.Info(fmt.Sprintf("Access at: https://%s.notebook.buzzperformancecloud.com", name))
+			if wait {
+				return cmdutil.WaitForReady(context.Background(), a.Client(), client.ServicePath(ref.Project, ref.Name, name), fmt.Sprintf("Notebook %q", name))
+			}
 			return nil
 		},
 	}
@@ -80,6 +83,7 @@ func newCreateCmd(a app.App) *cobra.Command {
 	cmd.Flags().IntVar(&gpuCount, "gpu-count", 1, "Number of GPUs")
 	cmd.Flags().StringVar(&image, "image", "jupyter/minimal-notebook:latest", "Jupyter container image")
 	cmd.Flags().BoolVar(&noDeploy, "no-deploy", false, "Create resource without deploying it")
+	cmd.Flags().BoolVar(&wait, "wait", false, "Wait for resource to be ready after deploying")
 	cmd.MarkFlagRequired("name")
 	return cmd
 }
@@ -184,14 +188,22 @@ func newDeleteCmd(a app.App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if !force {
-				fmt.Printf("Delete notebook %q? [y/N] ", args[0])
-				var confirm string
-				fmt.Scanln(&confirm)
-				if confirm != "y" && confirm != "Y" {
-					output.Info("Cancelled.")
-					return nil
+			var details [][2]string
+			if b, err := a.Client().Get(context.Background(), client.ServicePath(ref.Project, ref.Name, args[0])); err == nil {
+				var res client.CommonResource
+				json.Unmarshal(b, &res)
+				details = [][2]string{
+					{"Status", output.ExtractStatus(res.Status)},
+					{"Workspace", ref.Name},
 				}
+			}
+			ok, err := cmdutil.ConfirmDelete(force, "Notebook", args[0], details)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				output.Info("Cancelled.")
+				return nil
 			}
 			if err := a.Client().Delete(context.Background(), client.ServicePath(ref.Project, ref.Name, args[0])); err != nil {
 				return err

@@ -29,7 +29,8 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
 curl -fsSL "$URL" | tar -xz -C "$TMP"
-install -m 755 "$TMP/$BINARY" "$INSTALL_DIR/buzz"
+chmod 755 "$TMP/$BINARY"
+mv "$TMP/$BINARY" "$INSTALL_DIR/buzz"
 
 echo "buzz installed to $INSTALL_DIR/buzz"
 "$INSTALL_DIR/buzz" --version

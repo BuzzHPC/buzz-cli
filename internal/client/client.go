@@ -230,3 +230,67 @@ func ServicePath(project, workspace, name string) string {
 	}
 	return base
 }
+
+// TagGroupPath returns the path for tag groups.
+func TagGroupPath(project, name string) string {
+	base := fmt.Sprintf("/apis/tags.k8smgmt.io/v3/projects/%s/taggroups", project)
+	if name != "" {
+		return base + "/" + name
+	}
+	return base
+}
+
+// TagAssociationPath returns the path for project tag associations.
+func TagAssociationPath(project, name string) string {
+	base := fmt.Sprintf("/apis/tags.k8smgmt.io/v3/projects/%s/projecttagsassociations", project)
+	if name != "" {
+		return base + "/" + name
+	}
+	return base
+}
+
+// TagGroup represents a named set of key/value tags.
+type TagGroup struct {
+	APIVersion string      `json:"apiVersion"`
+	Kind       string      `json:"kind"`
+	Metadata   Metadata    `json:"metadata"`
+	Spec       TagGroupSpec `json:"spec"`
+}
+
+type TagGroupSpec struct {
+	Tags []TagKV `json:"tags"`
+}
+
+type TagKV struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+// TagAssociation associates tags with resources.
+type TagAssociation struct {
+	APIVersion string             `json:"apiVersion"`
+	Kind       string             `json:"kind"`
+	Metadata   Metadata           `json:"metadata"`
+	Spec       TagAssociationSpec `json:"spec"`
+}
+
+type TagAssociationSpec struct {
+	Associations []TagAssociationEntry `json:"associations"`
+}
+
+type TagAssociationEntry struct {
+	TagKey   string `json:"tagKey"`
+	TagType  string `json:"tagType"`
+	TagValue string `json:"tagValue"`
+	Resource string `json:"resource"`
+}
+
+// TagAssociationList is the list response for tag associations.
+type TagAssociationList struct {
+	Items []TagAssociation `json:"items"`
+}
+
+// TagGroupList is the list response for tag groups.
+type TagGroupList struct {
+	Items []TagGroup `json:"items"`
+}

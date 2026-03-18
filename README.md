@@ -16,7 +16,7 @@ Or download directly from the [latest release](https://github.com/BuzzHPC/buzz-c
 
 | Apple Silicon (M1/M2/M3) | Intel |
 |---|---|
-| `buzz_0.1.0_darwin_arm64.tar.gz` | `buzz_0.1.0_darwin_amd64.tar.gz` |
+| `buzz_0.5.0_darwin_arm64.tar.gz` | `buzz_0.5.0_darwin_amd64.tar.gz` |
 
 ```bash
 tar -xzf buzz_*_darwin_*.tar.gz
@@ -33,7 +33,7 @@ Or download directly:
 
 | x86_64 | ARM64 |
 |---|---|
-| `buzz_0.1.0_linux_amd64.tar.gz` | `buzz_0.1.0_linux_arm64.tar.gz` |
+| `buzz_0.5.0_linux_amd64.tar.gz` | `buzz_0.5.0_linux_arm64.tar.gz` |
 
 ```bash
 tar -xzf buzz_*_linux_*.tar.gz
@@ -42,7 +42,7 @@ sudo mv buzz /usr/local/bin/buzz
 
 ### Windows
 
-Download `buzz_0.1.0_windows_amd64.zip` from the [latest release](https://github.com/BuzzHPC/buzz-cli/releases/latest), extract it, and add the `buzz.exe` to your PATH.
+Download `buzz_0.5.0_windows_amd64.zip` from the [latest release](https://github.com/BuzzHPC/buzz-cli/releases/latest), extract it, and add the `buzz.exe` to your PATH.
 
 ---
 
@@ -68,6 +68,24 @@ buzz --api-key your-api-key vm list
 | `BUZZHPC_PROJECT` | Default project name (default: `defaultproject`) |
 | `BUZZHPC_WORKSPACE` | Default workspace name |
 | `BUZZHPC_BASE_URL` | Override API base URL |
+
+---
+
+## Regions
+
+BuzzHPC operates in two regions. All `create` commands require a `--region` flag:
+
+| Region | Description |
+|---|---|
+| `ca-qc-2` | Canada — Quebec 2 (recommended, H200 GPUs) |
+| `ca-qc-1` | Canada — Quebec 1 (A40 / H100 GPUs) |
+
+```bash
+buzz devpod create --name my-pod --region ca-qc-2
+buzz vm create --name my-vm --region ca-qc-1
+```
+
+The CLI automatically selects the correct SKU for your chosen region. No manual SKU selection is required.
 
 ---
 
@@ -105,10 +123,11 @@ buzz devpod delete <name>
 
 ```
 -n, --name string        Name of the DevPod (required)
+-r, --region string      Deployment region: ca-qc-1 or ca-qc-2 (required)
     --node-type string   GPU node type (default "H200")
     --gpu-count int      Number of GPUs (default 1)
-    --sku string         SKU: managed-developer-pods-v2-ca-qc-2 (H200) or managed-developer-pods-v2 (A40/H100)
     --no-deploy          Create without deploying
+    --wait               Wait for the pod to be ready
 ```
 
 **Examples:**
@@ -116,8 +135,8 @@ buzz devpod delete <name>
 ```bash
 buzz devpod list
 buzz devpod get my-pod
-buzz devpod create --name my-pod
-buzz pod create --name my-pod --node-type H100 --gpu-count 2
+buzz devpod create --name my-pod --region ca-qc-2
+buzz pod create --name my-pod --region ca-qc-1 --node-type H100 --gpu-count 2
 buzz devpod delete my-pod
 buzz devpod delete my-pod --force
 ```
@@ -141,10 +160,12 @@ buzz vm delete <name>
 
 ```
 -n, --name string        Name of the VM (required)
-    --node-type string   GPU node type: H200 (default "H200")
+-r, --region string      Deployment region: ca-qc-1 or ca-qc-2 (required)
+    --node-type string   GPU node type (default "H200")
     --gpu-count int      Number of GPUs (default 1)
-    --sku string         SKU (default: no-gpu-vm)
+    --sku string         Override VM SKU (no-gpu-vm, h200-1gpu-vm, h200-2gpu-vm, h200-4gpu-vm, h200-8gpu-vm, a40-1gpu-vm, a40-2gpu-vm, a40-4gpu-vm)
     --no-deploy          Create without deploying
+    --wait               Wait for the VM to be ready
 ```
 
 **Examples:**
@@ -152,8 +173,9 @@ buzz vm delete <name>
 ```bash
 buzz vm list
 buzz vm get my-vm
-buzz vm create --name my-vm
-buzz gpu-vm create --name my-vm --node-type H200 --gpu-count 2
+buzz vm create --name my-vm --region ca-qc-2
+buzz gpu-vm create --name my-vm --region ca-qc-1 --node-type H100 --gpu-count 2
+buzz vm create --name my-vm --region ca-qc-2 --sku h200-2gpu-vm
 buzz vm delete my-vm
 ```
 
@@ -178,10 +200,11 @@ buzz kubernetes delete <name>
 
 ```
 -n, --name string        Name of the cluster (required)
+-r, --region string      Deployment region: ca-qc-1 or ca-qc-2 (required)
     --node-type string   GPU node type: H200, A40, H100, CPU (default "H200")
     --nodes int          Number of nodes (default 1)
-    --sku string         SKU: mks-oneclick (default), mks-k8s-ca-qc-2, mks-k8s
     --no-deploy          Create without deploying
+    --wait               Wait for the cluster to be ready
 ```
 
 **Examples:**
@@ -189,9 +212,9 @@ buzz kubernetes delete <name>
 ```bash
 buzz k8s list
 buzz k8s get my-cluster
-buzz k8s create --name my-cluster
-buzz k8s create --name my-cluster --node-type A40 --nodes 2
-buzz k8s create --name prod-cluster --node-type H200 --nodes 4
+buzz k8s create --name my-cluster --region ca-qc-2
+buzz k8s create --name my-cluster --region ca-qc-1 --node-type A40 --nodes 2
+buzz k8s create --name prod-cluster --region ca-qc-2 --node-type H200 --nodes 4
 buzz cluster delete my-cluster
 ```
 
@@ -214,11 +237,12 @@ buzz notebook delete <name>
 
 ```
 -n, --name string        Name of the notebook — also sets the URL subdomain (required)
+-r, --region string      Deployment region: ca-qc-1 or ca-qc-2 (required)
     --node-type string   GPU node type (default "H200")
     --gpu-count int      Number of GPUs (default 1)
     --image string       Jupyter container image (default "jupyter/minimal-notebook:latest")
-    --sku string         SKU: jupyter-notebook-v4-ca-qc-2 (H200) or jupyter-notebook-v4 (A40/H100)
     --no-deploy          Create without deploying
+    --wait               Wait for the notebook to be ready
 ```
 
 **Examples:**
@@ -226,8 +250,8 @@ buzz notebook delete <name>
 ```bash
 buzz notebook list
 buzz notebook get my-nb
-buzz notebook create --name my-nb
-buzz jupyter create --name my-nb --node-type H100 --gpu-count 2 --image jupyter/scipy-notebook:latest
+buzz notebook create --name my-nb --region ca-qc-2
+buzz jupyter create --name my-nb --region ca-qc-1 --node-type H100 --gpu-count 2 --image jupyter/scipy-notebook:latest
 buzz nb delete my-nb
 ```
 
@@ -250,13 +274,14 @@ buzz inference delete <name>
 
 ```
 -n, --name string         Name of the inference endpoint (required)
+-r, --region string       Deployment region: ca-qc-1 or ca-qc-2 (required)
 -m, --model string        HuggingFace model ID (default "facebook/opt-125m")
     --node-type string    GPU node type (default "H200")
     --gpu-count int       Number of GPUs — use >1 for tensor parallelism (default 1)
     --hf-token string     HuggingFace token for gated/private models
     --extra-args string   Extra vLLM CLI args (e.g. '--max-model-len 8192')
-    --sku string          SKU: inference-vllm-v1 (H200) or inference-vllm-v1-h100 (A40/H100)
     --no-deploy           Create without deploying
+    --wait                Wait for the endpoint to be ready
 ```
 
 **Examples:**
@@ -264,10 +289,10 @@ buzz inference delete <name>
 ```bash
 buzz llm list
 buzz llm get my-llm
-buzz llm create --name my-llm --model meta-llama/Llama-3.1-8B-Instruct
-buzz llm create --name gated-model --model meta-llama/Llama-3.1-8B-Instruct --hf-token hf_xxx
-buzz llm create --name big-model --model meta-llama/Llama-3.1-70B-Instruct --gpu-count 4
-buzz llm create --name my-llm --model facebook/opt-125m --extra-args '--max-model-len 8192'
+buzz llm create --name my-llm --region ca-qc-2 --model meta-llama/Llama-3.1-8B-Instruct
+buzz llm create --name gated-model --region ca-qc-2 --model meta-llama/Llama-3.1-8B-Instruct --hf-token hf_xxx
+buzz llm create --name big-model --region ca-qc-2 --model meta-llama/Llama-3.1-70B-Instruct --gpu-count 4
+buzz llm create --name my-llm --region ca-qc-1 --model facebook/opt-125m --extra-args '--max-model-len 8192'
 buzz ai delete my-llm
 ```
 
@@ -289,10 +314,11 @@ buzz object-storage delete <name>
 **Create flags:**
 
 ```
--n, --name string   Name of the bucket (required)
--s, --size int      Storage quota in GB (default 10)
-    --sku string    SKU: object-storage-vast-ca-qc-2 (CA-QC-2) or object-storage-vast (CA-QC-1)
-    --no-deploy     Create without deploying
+-n, --name string      Name of the bucket (required)
+-r, --region string    Deployment region: ca-qc-1 or ca-qc-2 (required)
+-s, --size int         Storage quota in GB (default 10)
+    --no-deploy        Create without deploying
+    --wait             Wait for the bucket to be ready
 ```
 
 **Examples:**
@@ -300,9 +326,9 @@ buzz object-storage delete <name>
 ```bash
 buzz s3 list
 buzz s3 get my-bucket
-buzz s3 create --name my-bucket
-buzz s3 create --name my-bucket --size 100
-buzz bucket create --name my-bucket --sku object-storage-vast --size 200
+buzz s3 create --name my-bucket --region ca-qc-2
+buzz s3 create --name my-bucket --region ca-qc-2 --size 100
+buzz bucket create --name my-bucket --region ca-qc-1 --size 200
 buzz s3 delete my-bucket
 ```
 
@@ -327,6 +353,7 @@ buzz shared-fs delete <name>
 -n, --name string   Name of the filesystem (required)
 -s, --size int      Volume size in GB (default 50)
     --no-deploy     Create without deploying
+    --wait          Wait for the filesystem to be ready
 ```
 
 **Examples:**
@@ -363,9 +390,15 @@ buzz devpod get my-pod -w my-workspace
 
 **Create and deploy in one step:**
 ```bash
-buzz devpod create --name my-pod
+buzz devpod create --name my-pod --region ca-qc-2
 # Resource is created and deployed automatically.
 # Pass --no-deploy to create without deploying.
+```
+
+**Wait for a resource to be ready:**
+```bash
+buzz devpod create --name my-pod --region ca-qc-2 --wait
+buzz vm create --name my-vm --region ca-qc-2 --wait
 ```
 
 **Delete without confirmation prompt:**

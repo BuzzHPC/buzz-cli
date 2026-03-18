@@ -4,14 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
 	"github.com/buzzhpc/buzz-cli/internal/app"
 	"github.com/buzzhpc/buzz-cli/internal/client"
 	"github.com/buzzhpc/buzz-cli/internal/cmdutil"
 	"github.com/buzzhpc/buzz-cli/internal/output"
+	"github.com/buzzhpc/buzz-cli/internal/region"
 	"github.com/spf13/cobra"
 )
-
-
 
 func NewCmd(a app.App) *cobra.Command {
 	cmd := &cobra.Command{
@@ -29,23 +29,35 @@ func NewCmd(a app.App) *cobra.Command {
 }
 
 func newCreateCmd(a app.App) *cobra.Command {
-	var name, sku, nodeType string
+	var name, regionStr, nodeType string
 	var gpuCount int
 	var noDeploy, wait bool
 
 	cmd := &cobra.Command{
 		Use:   "create",
 		Short: "Create and deploy a Developer Pod",
-		Example: `  buzz devpod create --name my-pod
-  buzz pod create --name my-pod --node-type H100 --gpu-count 2
-  buzz devpod create --name my-pod --wait
-  buzz devpod create --name my-pod --no-deploy`,
+		Example: `  buzz devpod create --name my-pod --region ca-qc-2
+  buzz pod create --name my-pod --region ca-qc-1 --node-type H100 --gpu-count 2
+  buzz devpod create --name my-pod --region ca-qc-2 --wait
+  buzz devpod create --name my-pod --region ca-qc-2 --no-deploy`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			r, err := region.Parse(regionStr)
+			if err != nil {
+				return err
+			}
+
+			sku, err := region.SKU("devpod", r)
+			if err != nil {
+				return err
+			}
+
 			ref, err := cmdutil.RequireWorkspaceRef(cmd.Context(), a)
 			if err != nil {
 				return err
 			}
-			output.Info(fmt.Sprintf("Creating DevPod %q in %s/%s...", name, ref.Project, ref.Name))
+
+			output.Info(fmt.Sprintf("Creating DevPod %q in %s/%s (region: %s)...", name, ref.Project, ref.Name, r))
+
 			res := &client.CommonResource{
 				APIVersion: "paas.envmgmt.io/v1",
 				Kind:       "ComputeInstance",
@@ -58,35 +70,44 @@ func newCreateCmd(a app.App) *cobra.Command {
 					},
 				}),
 			}
+
 			path := client.ComputeInstancePath(ref.Project, ref.Name, "") + "?fail-on-exists=true"
 			b, err := a.Client().Post(context.Background(), path, res)
 			if err != nil {
 				return err
 			}
+
 			var created client.CommonResource
 			json.Unmarshal(b, &created)
+
 			if noDeploy {
 				output.Success(fmt.Sprintf("DevPod %q created (not deployed)", name))
 				return nil
 			}
+
 			output.Info(fmt.Sprintf("Deploying DevPod %q...", name))
 			if err := a.Client().PublishComputeInstance(context.Background(), ref.Project, ref.Name, name); err != nil {
 				return fmt.Errorf("created but deploy failed: %w", err)
 			}
 			output.Success(fmt.Sprintf("DevPod %q deployed.", name))
+
 			if wait {
 				return cmdutil.WaitForReady(context.Background(), a.Client(), client.ComputeInstancePath(ref.Project, ref.Name, name), fmt.Sprintf("DevPod %q", name))
 			}
 			return nil
 		},
 	}
+
 	cmd.Flags().StringVarP(&name, "name", "n", "", "Name of the DevPod (required)")
-	cmd.Flags().StringVar(&sku, "sku", "managed-developer-pods-v2-ca-qc-2", "SKU: managed-developer-pods-v2-ca-qc-2 (H200) or managed-developer-pods-v2 (A40/H100)")
-	cmd.Flags().StringVar(&nodeType, "node-type", "H200", "GPU node type")
+	cmd.Flags().StringVarP(&regionStr, "region", "r", "", "Deployment region: ca-qc-1 or ca-qc-2 (required)")
+	cmd.Flags().StringVar(&nodeType, "node-type", "H200", "GPU node type (H200, H100, A40)")
 	cmd.Flags().IntVar(&gpuCount, "gpu-count", 1, "Number of GPUs")
 	cmd.Flags().BoolVar(&noDeploy, "no-deploy", false, "Create resource without deploying it")
 	cmd.Flags().BoolVar(&wait, "wait", false, "Wait for resource to be ready after deploying")
+
 	cmd.MarkFlagRequired("name")
+	cmd.MarkFlagRequired("region")
+
 	return cmd
 }
 
@@ -140,10 +161,7 @@ func newGetCmd(a app.App) *cobra.Command {
 			var res client.CommonResource
 			json.Unmarshal(b, &res)
 
-			// Parse spec for GPU info
 			gpuCount, nodeType, podImage := extractSpecDetails(res.Spec)
-
-			// Parse status for SSH details
 			sshCmd, privateKey := extractSSHDetails(res.Status)
 
 			rows := [][]string{
@@ -177,7 +195,6 @@ func extractSpecDetails(spec json.RawMessage) (gpuCount, nodeType, podImage stri
 			Value string `json:"value"`
 		} `json:"variables"`
 	}
-	// spec may be a JSON string or object
 	if err := json.Unmarshal(spec, &s); err != nil {
 		var str string
 		if err2 := json.Unmarshal(spec, &str); err2 == nil {
@@ -213,7 +230,6 @@ func extractSSHDetails(status json.RawMessage) (sshCmd, privateKeyCmd string) {
 	if err := json.Unmarshal(status, &raw); err != nil || raw.Output == nil {
 		return
 	}
-	// Walk the nested output map generically
 	var outputMap map[string]json.RawMessage
 	if err := json.Unmarshal(raw.Output, &outputMap); err != nil {
 		return
@@ -255,7 +271,6 @@ func newDeleteCmd(a app.App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// Fetch resource details for confirmation prompt
 			var details [][2]string
 			if b, err := a.Client().Get(context.Background(), client.ComputeInstancePath(ref.Project, ref.Name, args[0])); err == nil {
 				var res client.CommonResource
@@ -307,4 +322,3 @@ func mustMarshal(v interface{}) json.RawMessage {
 	b, _ := json.Marshal(v)
 	return b
 }
-

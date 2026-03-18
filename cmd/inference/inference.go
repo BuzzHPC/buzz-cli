@@ -5,12 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"strings"
-
 	"github.com/buzzhpc/buzz-cli/internal/app"
 	"github.com/buzzhpc/buzz-cli/internal/client"
 	"github.com/buzzhpc/buzz-cli/internal/cmdutil"
 	"github.com/buzzhpc/buzz-cli/internal/output"
+	"github.com/buzzhpc/buzz-cli/internal/region"
 	"github.com/spf13/cobra"
 )
 
@@ -30,23 +29,33 @@ func NewCmd(a app.App) *cobra.Command {
 }
 
 func newCreateCmd(a app.App) *cobra.Command {
-	var name, sku, nodeType, modelID, hfToken, extraArgs string
+	var name, regionStr, modelID, nodeType, hfToken, extraArgs string
 	var gpuCount int
 	var noDeploy, wait bool
 
 	cmd := &cobra.Command{
 		Use:   "create",
-		Short: "Create and deploy an LLM inference endpoint",
-		Example: `  buzz llm create --name my-llm --model meta-llama/Llama-3.1-8B-Instruct
-  buzz inference create --name my-llm --model facebook/opt-125m
-  buzz llm create --name gated-model --model meta-llama/Llama-3.1-8B-Instruct --hf-token hf_xxx
-  buzz llm create --name my-llm --model facebook/opt-125m --no-deploy`,
+		Short: "Create and deploy an LLM Inference endpoint",
+		Example: `  buzz inference create --name my-llm --model meta-llama/Llama-3-8B-Instruct --region ca-qc-2
+  buzz llm create --name my-llm --model mistralai/Mistral-7B-v0.1 --region ca-qc-1 --gpu-count 2`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			r, err := region.Parse(regionStr)
+			if err != nil {
+				return err
+			}
+
+			sku, err := region.SKU("inference", r)
+			if err != nil {
+				return err
+			}
+
 			ref, err := cmdutil.RequireWorkspaceRef(cmd.Context(), a)
 			if err != nil {
 				return err
 			}
-			output.Info(fmt.Sprintf("Creating LLM inference %q (model: %s)...", name, modelID))
+
+			output.Info(fmt.Sprintf("Creating LLM inference %q (model: %s, region: %s)...", name, modelID, r))
+
 			res := &client.CommonResource{
 				APIVersion: "paas.envmgmt.io/v1",
 				Kind:       "Service",
@@ -62,35 +71,43 @@ func newCreateCmd(a app.App) *cobra.Command {
 					},
 				}),
 			}
+
 			path := client.ServicePath(ref.Project, ref.Name, "") + "?fail-on-exists=true"
 			if _, err := a.Client().Post(context.Background(), path, res); err != nil {
 				return err
 			}
+
 			if noDeploy {
 				output.Success(fmt.Sprintf("Inference endpoint %q created (not deployed)", name))
 				return nil
 			}
+
 			output.Info(fmt.Sprintf("Deploying inference endpoint %q...", name))
 			if err := a.Client().PublishService(context.Background(), ref.Project, ref.Name, name); err != nil {
 				return fmt.Errorf("created but deploy failed: %w", err)
 			}
 			output.Success(fmt.Sprintf("Inference endpoint %q deployed.", name))
+
 			if wait {
 				return cmdutil.WaitForReady(context.Background(), a.Client(), client.ServicePath(ref.Project, ref.Name, name), fmt.Sprintf("Inference endpoint %q", name))
 			}
 			return nil
 		},
 	}
+
 	cmd.Flags().StringVarP(&name, "name", "n", "", "Name of the inference endpoint (required)")
+	cmd.Flags().StringVarP(&regionStr, "region", "r", "", "Deployment region: ca-qc-1 or ca-qc-2 (required)")
 	cmd.Flags().StringVarP(&modelID, "model", "m", "facebook/opt-125m", "HuggingFace model ID")
-	cmd.Flags().StringVar(&sku, "sku", "inference-vllm-v1", "SKU: inference-vllm-v1 (H200) or inference-vllm-v1-h100 (A40/H100)")
-	cmd.Flags().StringVar(&nodeType, "node-type", "H200", "GPU node type")
-	cmd.Flags().IntVar(&gpuCount, "gpu-count", 1, "Number of GPUs (use >1 for tensor parallelism)")
-	cmd.Flags().StringVar(&hfToken, "hf-token", "", "HuggingFace token for gated/private models")
-	cmd.Flags().StringVar(&extraArgs, "extra-args", "", "Extra vLLM CLI args (e.g. '--max-model-len 8192')")
+	cmd.Flags().StringVar(&nodeType, "node-type", "H200", "GPU node type (H200, H100, A40)")
+	cmd.Flags().IntVar(&gpuCount, "gpu-count", 1, "Number of GPUs")
+	cmd.Flags().StringVar(&hfToken, "hf-token", "", "HuggingFace token for private/gated models")
+	cmd.Flags().StringVar(&extraArgs, "extra-args", "", "Extra arguments passed to vLLM")
 	cmd.Flags().BoolVar(&noDeploy, "no-deploy", false, "Create resource without deploying it")
 	cmd.Flags().BoolVar(&wait, "wait", false, "Wait for resource to be ready after deploying")
+
 	cmd.MarkFlagRequired("name")
+	cmd.MarkFlagRequired("region")
+
 	return cmd
 }
 
@@ -98,7 +115,7 @@ func newListCmd(a app.App) *cobra.Command {
 	return &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
-		Short:   "List all LLM inference endpoints",
+		Short:   "List all LLM Inference endpoints",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			refs, err := a.WorkspaceRefs(cmd.Context())
 			if err != nil || len(refs) == 0 {
@@ -130,7 +147,7 @@ func newGetCmd(a app.App) *cobra.Command {
 	return &cobra.Command{
 		Use:     "get <name>",
 		Aliases: []string{"describe", "show"},
-		Short:   "Get details of an inference endpoint",
+		Short:   "Get details of an LLM Inference endpoint",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ref, err := cmdutil.RequireWorkspaceRef(cmd.Context(), a)
@@ -143,30 +160,12 @@ func newGetCmd(a app.App) *cobra.Command {
 			}
 			var res client.CommonResource
 			json.Unmarshal(b, &res)
-
-			vars := extractVars(res.Spec)
-			endpointURL, endpointToken := extractGenericOutputFields(res.Status)
-
-			rows := [][]string{
+			output.Table([]string{"FIELD", "VALUE"}, [][]string{
 				{"Name", res.Metadata.Name},
 				{"Project", ref.Project},
 				{"Workspace", ref.Name},
 				{"Status", output.StatusColor(output.ExtractStatus(res.Status))},
-				{"SKU", extractProfileName(res.Spec)},
-				{"GPU Type", vars["Node Type"]},
-				{"GPU Count", vars["GPU Count"]},
-			}
-			// Model ID is stored under variable key "KeyX"
-			if m := vars["KeyX"]; m != "" {
-				rows = append(rows, []string{"Model", m})
-			}
-			if endpointURL != "" {
-				rows = append(rows, []string{"Endpoint URL", endpointURL})
-			}
-			if endpointToken != "" {
-				rows = append(rows, []string{"API Token", endpointToken})
-			}
-			output.Table([]string{"FIELD", "VALUE"}, rows)
+			})
 			return nil
 		},
 	}
@@ -176,24 +175,15 @@ func newDeleteCmd(a app.App) *cobra.Command {
 	var force bool
 	cmd := &cobra.Command{
 		Use:     "delete <name>",
-		Aliases: []string{"destroy", "rm"},
-		Short:   "Delete an LLM inference endpoint",
+		Aliases: []string{"destroy", "rm", "remove"},
+		Short:   "Delete an LLM Inference endpoint",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ref, err := cmdutil.RequireWorkspaceRef(cmd.Context(), a)
 			if err != nil {
 				return err
 			}
-			var details [][2]string
-			if b, err := a.Client().Get(context.Background(), client.ServicePath(ref.Project, ref.Name, args[0])); err == nil {
-				var res client.CommonResource
-				json.Unmarshal(b, &res)
-				details = [][2]string{
-					{"Status", output.ExtractStatus(res.Status)},
-					{"Workspace", ref.Name},
-				}
-			}
-			ok, err := cmdutil.ConfirmDelete(force, "Inference endpoint", args[0], details)
+			ok, err := cmdutil.ConfirmDelete(force, "Inference endpoint", args[0], nil)
 			if err != nil {
 				return err
 			}
@@ -219,76 +209,14 @@ func parseRows(items []json.RawMessage, project, workspace string) [][]string {
 		if err := json.Unmarshal(raw, &res); err != nil {
 			continue
 		}
-		rows = append(rows, []string{res.Metadata.Name, project, workspace, output.StatusColor(output.ExtractStatus(res.Status))})
+		rows = append(rows, []string{
+			res.Metadata.Name,
+			project,
+			workspace,
+			output.StatusColor(output.ExtractStatus(res.Status)),
+		})
 	}
 	return rows
-}
-
-func extractVars(spec json.RawMessage) map[string]string {
-	var s struct {
-		Variables []struct {
-			Name  string `json:"name"`
-			Value string `json:"value"`
-		} `json:"variables"`
-	}
-	if err := json.Unmarshal(spec, &s); err != nil {
-		var str string
-		if json.Unmarshal(spec, &str) == nil {
-			json.Unmarshal([]byte(str), &s)
-		}
-	}
-	m := make(map[string]string)
-	for _, v := range s.Variables {
-		if v.Value != "" {
-			m[v.Name] = v.Value
-		}
-	}
-	return m
-}
-
-func extractProfileName(spec json.RawMessage) string {
-	var s struct {
-		ComputeProfile struct{ Name string `json:"name"` } `json:"computeProfile"`
-		ServiceProfile struct{ Name string `json:"name"` } `json:"serviceProfile"`
-	}
-	if err := json.Unmarshal(spec, &s); err != nil {
-		var str string
-		if json.Unmarshal(spec, &str) == nil {
-			json.Unmarshal([]byte(str), &s)
-		}
-	}
-	if s.ComputeProfile.Name != "" {
-		return s.ComputeProfile.Name
-	}
-	return s.ServiceProfile.Name
-}
-
-// extractGenericOutputFields walks output tasks looking for URL/token-like fields.
-func extractGenericOutputFields(status json.RawMessage) (endpointURL, token string) {
-	var raw struct {
-		Output map[string]struct {
-			Tasks map[string]map[string]struct {
-				Value string `json:"value"`
-			} `json:"tasks"`
-		} `json:"output"`
-	}
-	if err := json.Unmarshal(status, &raw); err != nil {
-		return
-	}
-	for _, res := range raw.Output {
-		for _, task := range res.Tasks {
-			for k, v := range task {
-				lower := strings.ToLower(k)
-				if endpointURL == "" && (strings.Contains(lower, "url") || strings.Contains(lower, "endpoint") || strings.Contains(lower, "host")) {
-					endpointURL = v.Value
-				}
-				if token == "" && (strings.Contains(lower, "token") || strings.Contains(lower, "key")) {
-					token = v.Value
-				}
-			}
-		}
-	}
-	return
 }
 
 func mustMarshal(v interface{}) json.RawMessage {

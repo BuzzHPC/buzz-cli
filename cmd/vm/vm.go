@@ -4,13 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strconv"
-	"strings"
 
 	"github.com/buzzhpc/buzz-cli/internal/app"
 	"github.com/buzzhpc/buzz-cli/internal/client"
 	"github.com/buzzhpc/buzz-cli/internal/cmdutil"
 	"github.com/buzzhpc/buzz-cli/internal/output"
+	"github.com/buzzhpc/buzz-cli/internal/region"
 	"github.com/spf13/cobra"
 )
 
@@ -30,22 +29,38 @@ func NewCmd(a app.App) *cobra.Command {
 }
 
 func newCreateCmd(a app.App) *cobra.Command {
-	var name, sku, nodeType string
+	var name, regionStr, nodeType, sku string
 	var gpuCount int
 	var noDeploy, wait bool
 
 	cmd := &cobra.Command{
 		Use:   "create",
 		Short: "Create and deploy a GPU Virtual Machine",
-		Example: `  buzz vm create --name my-vm
-  buzz gpu-vm create --name my-vm --node-type H200 --gpu-count 2
-  buzz vm create --name my-vm --no-deploy`,
+		Example: `  buzz vm create --name my-vm --region ca-qc-2
+  buzz gpu-vm create --name my-vm --region ca-qc-1 --node-type H100 --gpu-count 2
+  buzz vm create --name my-vm --region ca-qc-2 --sku h200-2gpu-vm`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			r, err := region.Parse(regionStr)
+			if err != nil {
+				return err
+			}
+
+			// VMs use an explicit --sku since there are many GPU variants.
+			// Fall back to region default only when sku is not set.
+			if sku == "" {
+				sku, err = region.SKU("vm", r)
+				if err != nil {
+					return err
+				}
+			}
+
 			ref, err := cmdutil.RequireWorkspaceRef(cmd.Context(), a)
 			if err != nil {
 				return err
 			}
-			output.Info(fmt.Sprintf("Creating GPU VM %q in %s/%s...", name, ref.Project, ref.Name))
+
+			output.Info(fmt.Sprintf("Creating GPU VM %q in %s/%s (region: %s, sku: %s)...", name, ref.Project, ref.Name, r, sku))
+
 			res := &client.CommonResource{
 				APIVersion: "paas.envmgmt.io/v1",
 				Kind:       "ComputeInstance",
@@ -58,32 +73,41 @@ func newCreateCmd(a app.App) *cobra.Command {
 					},
 				}),
 			}
+
 			path := client.ComputeInstancePath(ref.Project, ref.Name, "") + "?fail-on-exists=true"
 			if _, err := a.Client().Post(context.Background(), path, res); err != nil {
 				return err
 			}
+
 			if noDeploy {
 				output.Success(fmt.Sprintf("VM %q created (not deployed)", name))
 				return nil
 			}
+
 			output.Info(fmt.Sprintf("Deploying VM %q...", name))
 			if err := a.Client().PublishComputeInstance(context.Background(), ref.Project, ref.Name, name); err != nil {
 				return fmt.Errorf("created but deploy failed: %w", err)
 			}
 			output.Success(fmt.Sprintf("VM %q deployed.", name))
+
 			if wait {
 				return cmdutil.WaitForReady(context.Background(), a.Client(), client.ComputeInstancePath(ref.Project, ref.Name, name), fmt.Sprintf("VM %q", name))
 			}
 			return nil
 		},
 	}
+
 	cmd.Flags().StringVarP(&name, "name", "n", "", "Name of the VM (required)")
-	cmd.Flags().StringVar(&sku, "sku", "no-gpu-vm", "SKU (default: no-gpu-vm)")
-	cmd.Flags().StringVar(&nodeType, "node-type", "H200", "GPU node type: H200")
+	cmd.Flags().StringVarP(&regionStr, "region", "r", "", "Deployment region: ca-qc-1 or ca-qc-2 (required)")
+	cmd.Flags().StringVar(&sku, "sku", "", "VM SKU (no-gpu-vm, h200-1gpu-vm, h200-2gpu-vm, h200-4gpu-vm, h200-8gpu-vm, a40-1gpu-vm, a40-2gpu-vm, a40-4gpu-vm). Defaults to no-gpu-vm.")
+	cmd.Flags().StringVar(&nodeType, "node-type", "H200", "GPU node type (H200, H100, A40)")
 	cmd.Flags().IntVar(&gpuCount, "gpu-count", 1, "Number of GPUs")
 	cmd.Flags().BoolVar(&noDeploy, "no-deploy", false, "Create resource without deploying it")
 	cmd.Flags().BoolVar(&wait, "wait", false, "Wait for resource to be ready after deploying")
+
 	cmd.MarkFlagRequired("name")
+	cmd.MarkFlagRequired("region")
+
 	return cmd
 }
 
@@ -91,7 +115,7 @@ func newListCmd(a app.App) *cobra.Command {
 	return &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
-		Short:   "List all GPU VMs",
+		Short:   "List all GPU Virtual Machines",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			refs, err := a.WorkspaceRefs(cmd.Context())
 			if err != nil || len(refs) == 0 {
@@ -123,7 +147,7 @@ func newGetCmd(a app.App) *cobra.Command {
 	return &cobra.Command{
 		Use:     "get <name>",
 		Aliases: []string{"describe", "show"},
-		Short:   "Get details of a GPU VM",
+		Short:   "Get details of a GPU Virtual Machine",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ref, err := cmdutil.RequireWorkspaceRef(cmd.Context(), a)
@@ -136,76 +160,12 @@ func newGetCmd(a app.App) *cobra.Command {
 			}
 			var res client.CommonResource
 			json.Unmarshal(b, &res)
-
-			vars := extractVars(res.Spec)
-			sshCmd, privateKey := extractSSHDetails(res.Status)
-			vmDetails := extractVMDetails(res.Status)
-			vmDetails.Datacenter = extractVMDatacenter(res.Spec)
-
-			memGB := ""
-			if mb := vars["Guest Memory Size"]; mb != "" {
-				if v, err := strconv.Atoi(mb); err == nil {
-					memGB = fmt.Sprintf("%d GB", v/1024)
-				} else {
-					memGB = mb
-				}
-			}
-
-			rows := [][]string{
+			output.Table([]string{"FIELD", "VALUE"}, [][]string{
 				{"Name", res.Metadata.Name},
 				{"Project", ref.Project},
 				{"Workspace", ref.Name},
 				{"Status", output.StatusColor(output.ExtractStatus(res.Status))},
-				{"SKU", extractProfileName(res.Spec)},
-			}
-			if v := vars["GPU Model"]; v != "" {
-				rows = append(rows, []string{"GPU Model", v})
-			}
-			if v := vars["Guest GPU Count"]; v != "" {
-				rows = append(rows, []string{"GPU Count", v})
-			}
-			if v := vars["Guest CPU Count"]; v != "" {
-				rows = append(rows, []string{"CPU Count", v})
-			}
-			if memGB != "" {
-				rows = append(rows, []string{"Memory", memGB})
-			}
-			if v := vars["Guest Disk Size"]; v != "" {
-				rows = append(rows, []string{"Disk (GB)", v})
-			}
-			if vmDetails.Datacenter != "" {
-				rows = append(rows, []string{"Datacenter", vmDetails.Datacenter})
-			}
-			if vmDetails.OSName != "" {
-				rows = append(rows, []string{"OS", vmDetails.OSName})
-			}
-			if vmDetails.Username != "" {
-				rows = append(rows, []string{"Username", vmDetails.Username})
-			}
-			if vmDetails.Password != "" {
-				rows = append(rows, []string{"Password", vmDetails.Password})
-			}
-			if vmDetails.PrivateIP != "" {
-				rows = append(rows, []string{"Private IP", vmDetails.PrivateIP})
-			}
-			if vmDetails.PublicIP != "" {
-				rows = append(rows, []string{"Public IP", vmDetails.PublicIP})
-			}
-			if vmDetails.Port != "" {
-				rows = append(rows, []string{"SSH Port", vmDetails.Port})
-			}
-			if vmDetails.PortForwards != "" && vmDetails.PortForwards != "No Port forward configured" {
-				rows = append(rows, []string{"Port Forwards", vmDetails.PortForwards})
-			}
-			if sshCmd != "" {
-				rows = append(rows, []string{"SSH Command", sshCmd})
-			}
-			output.Table([]string{"FIELD", "VALUE"}, rows)
-			if privateKey != "" {
-				fmt.Println()
-				output.Info("To save your SSH private key, run:")
-				fmt.Println(privateKey)
-			}
+			})
 			return nil
 		},
 	}
@@ -215,24 +175,15 @@ func newDeleteCmd(a app.App) *cobra.Command {
 	var force bool
 	cmd := &cobra.Command{
 		Use:     "delete <name>",
-		Aliases: []string{"destroy", "rm"},
-		Short:   "Delete a GPU VM",
+		Aliases: []string{"destroy", "rm", "remove"},
+		Short:   "Delete a GPU Virtual Machine",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ref, err := cmdutil.RequireWorkspaceRef(cmd.Context(), a)
 			if err != nil {
 				return err
 			}
-			var details [][2]string
-			if b, err := a.Client().Get(context.Background(), client.ComputeInstancePath(ref.Project, ref.Name, args[0])); err == nil {
-				var res client.CommonResource
-				json.Unmarshal(b, &res)
-				details = [][2]string{
-					{"Status", output.ExtractStatus(res.Status)},
-					{"Workspace", ref.Name},
-				}
-			}
-			ok, err := cmdutil.ConfirmDelete(force, "VM", args[0], details)
+			ok, err := cmdutil.ConfirmDelete(force, "VM", args[0], nil)
 			if err != nil {
 				return err
 			}
@@ -251,178 +202,6 @@ func newDeleteCmd(a app.App) *cobra.Command {
 	return cmd
 }
 
-func extractVars(spec json.RawMessage) map[string]string {
-	var s struct {
-		Variables []struct {
-			Name  string `json:"name"`
-			Value string `json:"value"`
-		} `json:"variables"`
-	}
-	if err := json.Unmarshal(spec, &s); err != nil {
-		var str string
-		if json.Unmarshal(spec, &str) == nil {
-			json.Unmarshal([]byte(str), &s)
-		}
-	}
-	m := make(map[string]string)
-	for _, v := range s.Variables {
-		if v.Value != "" {
-			m[v.Name] = v.Value
-		}
-	}
-	return m
-}
-
-func extractProfileName(spec json.RawMessage) string {
-	var s struct {
-		ComputeProfile struct{ Name string `json:"name"` } `json:"computeProfile"`
-		ServiceProfile struct{ Name string `json:"name"` } `json:"serviceProfile"`
-	}
-	if err := json.Unmarshal(spec, &s); err != nil {
-		var str string
-		if json.Unmarshal(spec, &str) == nil {
-			json.Unmarshal([]byte(str), &s)
-		}
-	}
-	if s.ComputeProfile.Name != "" {
-		return s.ComputeProfile.Name
-	}
-	return s.ServiceProfile.Name
-}
-
-type vmDetails struct {
-	Hostname     string
-	OSName       string
-	Username     string
-	Password     string
-	PrivateIP    string
-	PublicIP     string
-	Port         string
-	PortForwards string
-	ServerHost   string
-	Datacenter   string
-}
-
-func extractVMDetails(status json.RawMessage) vmDetails {
-	var raw struct {
-		Output map[string]struct {
-			Tasks map[string]map[string]string `json:"tasks"`
-		} `json:"output"`
-	}
-	var d vmDetails
-	if err := json.Unmarshal(status, &raw); err != nil {
-		return d
-	}
-	for _, res := range raw.Output {
-		for _, task := range res.Tasks {
-			if v, ok := task["Hostname"]; ok {
-				d.Hostname = v
-			}
-			if v, ok := task["OSName"]; ok {
-				d.OSName = v
-			}
-			if v, ok := task["Username"]; ok {
-				d.Username = v
-			}
-			if v, ok := task["Password"]; ok {
-				d.Password = v
-			}
-			if v, ok := task["Private IP"]; ok {
-				d.PrivateIP = v
-			}
-			if v, ok := task["Public IP"]; ok {
-				d.PublicIP = v
-			}
-			if v, ok := task["Port"]; ok {
-				d.Port = v
-			}
-			if v, ok := task["Port Forwards"]; ok {
-				d.PortForwards = v
-			}
-			if v, ok := task["ServerHost"]; ok {
-				d.ServerHost = v
-			}
-		}
-	}
-	return d
-}
-
-func extractVMDatacenter(spec json.RawMessage) string {
-	var s struct {
-		Datacenter struct{ Name string `json:"name"` } `json:"datacenter"`
-	}
-	if err := json.Unmarshal(spec, &s); err != nil {
-		var str string
-		if json.Unmarshal(spec, &str) == nil {
-			json.Unmarshal([]byte(str), &s)
-		}
-	}
-	return s.Datacenter.Name
-}
-
-func extractSSHDetails(status json.RawMessage) (sshCmd, privateKeyCmd string) {
-	var raw struct {
-		Output json.RawMessage `json:"output"`
-	}
-	if err := json.Unmarshal(status, &raw); err != nil || raw.Output == nil {
-		return
-	}
-	var outputMap map[string]json.RawMessage
-	if err := json.Unmarshal(raw.Output, &outputMap); err != nil {
-		return
-	}
-	for _, resourceRaw := range outputMap {
-		var resource struct {
-			Tasks map[string]json.RawMessage `json:"tasks"`
-		}
-		if err := json.Unmarshal(resourceRaw, &resource); err != nil {
-			continue
-		}
-		for _, taskRaw := range resource.Tasks {
-			var task map[string]struct {
-				Value string `json:"value"`
-			}
-			if err := json.Unmarshal(taskRaw, &task); err != nil {
-				continue
-			}
-			if v, ok := task["SSH Command"]; ok {
-				sshCmd = v.Value
-			}
-			if v, ok := task["Create Private Key File"]; ok {
-				privateKeyCmd = v.Value
-			}
-		}
-	}
-	return
-}
-
-// extractOutputField searches output tasks for the first value whose key contains any of the given substrings.
-func extractOutputField(status json.RawMessage, keywords ...string) string {
-	var raw struct {
-		Output map[string]struct {
-			Tasks map[string]map[string]struct {
-				Value string `json:"value"`
-			} `json:"tasks"`
-		} `json:"output"`
-	}
-	if err := json.Unmarshal(status, &raw); err != nil {
-		return ""
-	}
-	for _, res := range raw.Output {
-		for _, task := range res.Tasks {
-			for k, v := range task {
-				lower := strings.ToLower(k)
-				for _, kw := range keywords {
-					if strings.Contains(lower, kw) && v.Value != "" {
-						return v.Value
-					}
-				}
-			}
-		}
-	}
-	return ""
-}
-
 func parseRows(items []json.RawMessage, project, workspace string) [][]string {
 	var rows [][]string
 	for _, raw := range items {
@@ -430,7 +209,12 @@ func parseRows(items []json.RawMessage, project, workspace string) [][]string {
 		if err := json.Unmarshal(raw, &res); err != nil {
 			continue
 		}
-		rows = append(rows, []string{res.Metadata.Name, project, workspace, output.StatusColor(output.ExtractStatus(res.Status))})
+		rows = append(rows, []string{
+			res.Metadata.Name,
+			project,
+			workspace,
+			output.StatusColor(output.ExtractStatus(res.Status)),
+		})
 	}
 	return rows
 }
